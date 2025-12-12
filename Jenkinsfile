@@ -1,87 +1,89 @@
 pipeline {
-    agent { label 'agent' }
+    agent { label 'maven-agent' }
 
     environment {
-        MAVEN_OPTS = "-Dmaven.test.failure.ignore=false"
-        APP_ARTIFACT = "target/*.jar"
-
-        APP_USER = "ubuntu"
-        APP_HOST = "10.30.1.200"
-        APP_DEPLOY_DIR = "/opt/app"
-
-        QA_USER = "ubuntu"
-        QA_HOST = "10.30.1.201"
-        QA_DEPLOY_DIR = "/opt/app-qa"
+        // Change these values as per your setup
+        APP_NAME = "demo-app"
+        ARTIFACT_DIR = "target"
+        SSH_CREDENTIALS = "app-server-ssh"
+        APP_SERVER_USER = "ec2-user"
+        APP_SERVER_IP = "YOUR_APP_SERVER_IP"
+        QA_SERVER_IP  = "YOUR_QA_SERVER_IP"
     }
 
     stages {
 
         stage('Checkout Code') {
             steps {
+                echo "Checking out source code from GitHub"
                 checkout scm
             }
         }
 
         stage('Build & Test') {
             steps {
+                echo "Running Maven clean test"
                 sh 'mvn clean test'
-            }
-            post {
-                always {
-                    junit '**/target/surefire-reports/*.xml'
-                }
             }
         }
 
         stage('Security Scan') {
             steps {
+                echo "Running OWASP Dependency Check"
                 sh '''
-                  if ! command -v dependency-check.sh > /dev/null 2>&1; then
-                    echo "WARNING: OWASP Dependency Check not installed"
-                  else
-                    dependency-check.sh --project "MyJavaApp" --scan . --format HTML --failOnCVSS 7
-                  fi
+                  mvn org.owasp:dependency-check-maven:check \
+                  -DfailBuildOnCVSS=7
                 '''
             }
         }
 
         stage('Package') {
             steps {
-                sh 'mvn -B package -DskipTests'
-            }
-        }
+                echo "Packaging application"
+                sh 'mvn clean package -DskipTests'
 
-        stage('Archive Artifact') {
-            steps {
+                echo "Archiving artifact"
                 archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
             }
         }
 
-        stage('Deploy to QA (development branch)') {
+        stage('Deploy to QA (develop branch)') {
             when {
-                branch 'development'
+                branch 'develop'
             }
             steps {
-                sshagent(credentials: ['applicationscreds']) {
+                echo "Deploying to QA server"
+
+                sshagent(credentials: [env.SSH_CREDENTIALS]) {
                     sh """
-                      scp ${APP_ARTIFACT} ${QA_USER}@${QA_HOST}:${QA_DEPLOY_DIR}/app.jar
-                      ssh ${QA_USER}@${QA_HOST} 'pkill -f app.jar || true'
-                      ssh ${QA_USER}@${QA_HOST} 'nohup java -jar ${QA_DEPLOY_DIR}/app.jar > app.log 2>&1 &'
+                    scp -o StrictHostKeyChecking=no target/*.jar \
+                    ${APP_SERVER_USER}@${QA_SERVER_IP}:/home/${APP_SERVER_USER}/${APP_NAME}.jar
+
+                    ssh ${APP_SERVER_USER}@${QA_SERVER_IP} '
+                      pkill -f ${APP_NAME}.jar || true
+                      nohup java -jar /home/${APP_SERVER_USER}/${APP_NAME}.jar > app.log 2>&1 &
+                    '
                     """
                 }
             }
         }
 
-        stage('Deploy to Application Server (main branch)') {
+        stage('Deploy to Production (main branch)') {
             when {
                 branch 'main'
             }
             steps {
-                sshagent(credentials: ['applicationscreds']) {
+                echo "Deploying to Production server"
+
+                sshagent(credentials: [env.SSH_CREDENTIALS]) {
                     sh """
-                      scp ${APP_ARTIFACT} ${APP_USER}@${APP_HOST}:${APP_DEPLOY_DIR}/app.jar
-                      ssh ${APP_USER}@${APP_HOST} 'pkill -f app.jar || true'
-                      ssh ${APP_USER}@${APP_HOST} 'nohup java -jar ${APP_DEPLOY_DIR}/app.jar > app.log 2>&1 &'
+                    scp -o StrictHostKeyChecking=no target/*.jar \
+                    ${APP_SERVER_USER}@${APP_SERVER_IP}:/home/${APP_SERVER_USER}/${APP_NAME}.jar
+
+                    ssh ${APP_SERVER_USER}@${APP_SERVER_IP} '
+                      pkill -f ${APP_NAME}.jar || true
+                      nohup java -jar /home/${APP_SERVER_USER}/${APP_NAME}.jar > app.log 2>&1 &
+                    '
                     """
                 }
             }
@@ -90,10 +92,10 @@ pipeline {
 
     post {
         success {
-            echo "✅ Build succeeded!"
+            echo "Pipeline completed successfully!"
         }
         failure {
-            echo "❌ Build failed!"
+            echo "Pipeline failed. Please check logs."
         }
     }
 }
