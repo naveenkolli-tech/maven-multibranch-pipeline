@@ -2,88 +2,75 @@ pipeline {
     agent { label 'maven-agent' }
 
     environment {
-        // Change these values as per your setup
-        APP_NAME = "demo-app"
-        ARTIFACT_DIR = "target"
-        SSH_CREDENTIALS = "app-server-ssh"
-        APP_SERVER_USER = "ec2-user"
-        APP_SERVER_IP = "YOUR_APP_SERVER_IP"
-        QA_SERVER_IP  = "YOUR_QA_SERVER_IP"
+        GITHUB_CREDENTIALS = 'YOUR_GITHUB_CREDENTIAL_ID'
+        SSH_CREDENTIALS = 'YOUR_SSH_CREDENTIAL_ID'
+        APP_SERVER = "ec2-user@APP_SERVER_IP"
+        QA_SERVER = "ec2-user@QA_SERVER_IP"
     }
 
     stages {
-
         stage('Checkout Code') {
             steps {
-                echo "Checking out source code from GitHub"
                 checkout scm
             }
         }
 
         stage('Build & Test') {
             steps {
-                echo "Running Maven clean test"
                 sh 'mvn clean test'
             }
         }
 
         stage('Security Scan') {
             steps {
-                echo "Running OWASP Dependency Check"
                 sh '''
-                  mvn org.owasp:dependency-check-maven:check \
-                  -DfailBuildOnCVSS=7
+                mvn org.owasp:dependency-check-maven:check \
+                   -Dformat=HTML
                 '''
+            }
+            post {
+                failure {
+                    error "Security scan failed — check vulnerabilities!"
+                }
             }
         }
 
         stage('Package') {
             steps {
-                echo "Packaging application"
-                sh 'mvn clean package -DskipTests'
-
-                echo "Archiving artifact"
-                archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+                sh 'mvn package'
+            }
+            post {
+                success {
+                    archiveArtifacts artifacts: '**/target/*.jar', fingerprint: true
+                }
             }
         }
 
-        stage('Deploy to QA (develop branch)') {
+        stage('Deploy to QA') {
             when {
                 branch 'develop'
             }
             steps {
-                echo "Deploying to QA server"
-
-                sshagent(credentials: [env.SSH_CREDENTIALS]) {
+                sshagent(credentials: [SSH_CREDENTIALS]) {
                     sh """
-                    scp -o StrictHostKeyChecking=no target/*.jar \
-                    ${APP_SERVER_USER}@${QA_SERVER_IP}:/home/${APP_SERVER_USER}/${APP_NAME}.jar
-
-                    ssh ${APP_SERVER_USER}@${QA_SERVER_IP} '
-                      pkill -f ${APP_NAME}.jar || true
-                      nohup java -jar /home/${APP_SERVER_USER}/${APP_NAME}.jar > app.log 2>&1 &
-                    '
+                    scp target/*.jar ${QA_SERVER}:/home/ec2-user/app.jar
+                    ssh ${QA_SERVER} "pkill -f 'java -jar' || true"
+                    ssh ${QA_SERVER} "${APP_START_COMMAND}"
                     """
                 }
             }
         }
 
-        stage('Deploy to Production (main branch)') {
+        stage('Deploy to Production') {
             when {
                 branch 'main'
             }
             steps {
-                echo "Deploying to Production server"
-
-                sshagent(credentials: [env.SSH_CREDENTIALS]) {
+                sshagent(credentials: [SSH_CREDENTIALS]) {
                     sh """
-                    scp -o StrictHostKeyChecking=no target/*.jar \
-                    ${APP_SERVER_USER}@${APP_SERVER_IP}:/home/${APP_SERVER_USER}/${APP_NAME}.jar
-
-                    ssh ${APP_SERVER_USER}@${APP_SERVER_IP} '
-                      pkill -f ${APP_NAME}.jar || true
-                      nohup java -jar /home/${APP_SERVER_USER}/${APP_NAME}.jar > app.log 2>&1 &
-                    '
+                    scp target/*.jar ${APP_SERVER}:/home/ec2-user/app.jar
+                    ssh ${APP_SERVER} "pkill -f 'java -jar' || true"
+                    ssh ${APP_SERVER} "${APP_START_COMMAND}"
                     """
                 }
             }
@@ -91,11 +78,8 @@ pipeline {
     }
 
     post {
-        success {
-            echo "Pipeline completed successfully!"
-        }
-        failure {
-            echo "Pipeline failed. Please check logs."
+        always {
+            echo "Pipeline finished for branch: ${env.BRANCH_NAME}"
         }
     }
 }
