@@ -1,17 +1,16 @@
 pipeline {
-    agent { label 'maven-agent' }
+    agent { label 'agent' }
 
     environment {
-        // Change to your repo and artifact details
         MAVEN_OPTS = "-Dmaven.test.failure.ignore=false"
-        APP_ARTIFACT = "target/app.jar"      // adjust to your built jar/war
-        // Application server details
+        APP_ARTIFACT = "target/*.jar"
+
         APP_USER = "ubuntu"
-        APP_HOST = "APP_SERVER_PUBLIC_IP"    // e.g. 3.x.x.x
+        APP_HOST = "10.30.1.200"
         APP_DEPLOY_DIR = "/opt/app"
-        // QA server (for develop branch, extra)
+
         QA_USER = "ubuntu"
-        QA_HOST = "QA_SERVER_PUBLIC_IP"
+        QA_HOST = "10.30.1.201"
         QA_DEPLOY_DIR = "/opt/app-qa"
     }
 
@@ -36,19 +35,12 @@ pipeline {
 
         stage('Security Scan') {
             steps {
-                // Example using OWASP Dependency-Check CLI if installed on agent
-                // Adjust the path and project name as needed
                 sh '''
-                    if ! command -v dependency-check.sh > /dev/null 2>&1; then
-                      echo "WARNING: dependency-check.sh not installed, skipping scan"
-                    else
-                      dependency-check.sh \
-                        --project "MyJavaApp" \
-                        --scan . \
-                        --format "HTML" \
-                        --out dependency-check-report.html \
-                        --failOnCVSS 7
-                    fi
+                  if ! command -v dependency-check.sh > /dev/null 2>&1; then
+                    echo "WARNING: OWASP Dependency Check not installed"
+                  else
+                    dependency-check.sh --project "MyJavaApp" --scan . --format HTML --failOnCVSS 7
+                  fi
                 '''
             }
         }
@@ -65,14 +57,14 @@ pipeline {
             }
         }
 
-        stage('Deploy to QA (develop branch)') {
+        stage('Deploy to QA (development branch)') {
             when {
-                branch 'develop'
+                branch 'development'
             }
             steps {
-                sshagent(credentials: ['app-server-ssh']) {
+                sshagent(credentials: ['applicationscreds']) {
                     sh """
-                      scp target/*.jar ${QA_USER}@${QA_HOST}:${QA_DEPLOY_DIR}/app.jar
+                      scp ${APP_ARTIFACT} ${QA_USER}@${QA_HOST}:${QA_DEPLOY_DIR}/app.jar
                       ssh ${QA_USER}@${QA_HOST} 'pkill -f app.jar || true'
                       ssh ${QA_USER}@${QA_HOST} 'nohup java -jar ${QA_DEPLOY_DIR}/app.jar > app.log 2>&1 &'
                     """
@@ -85,9 +77,9 @@ pipeline {
                 branch 'main'
             }
             steps {
-                sshagent(credentials: ['app-server-ssh']) {
+                sshagent(credentials: ['applicationscreds']) {
                     sh """
-                      scp target/*.jar ${APP_USER}@${APP_HOST}:${APP_DEPLOY_DIR}/app.jar
+                      scp ${APP_ARTIFACT} ${APP_USER}@${APP_HOST}:${APP_DEPLOY_DIR}/app.jar
                       ssh ${APP_USER}@${APP_HOST} 'pkill -f app.jar || true'
                       ssh ${APP_USER}@${APP_HOST} 'nohup java -jar ${APP_DEPLOY_DIR}/app.jar > app.log 2>&1 &'
                     """
@@ -97,11 +89,11 @@ pipeline {
     }
 
     post {
-        failure {
-            echo "Build failed!"
-        }
         success {
-            echo "Build succeeded!"
+            echo "✅ Build succeeded!"
+        }
+        failure {
+            echo "❌ Build failed!"
         }
     }
 }
